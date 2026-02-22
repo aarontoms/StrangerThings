@@ -1,20 +1,13 @@
 import { useEffect, useRef } from 'react';
 import { useCallStore } from '../store/useCallStore';
-import { useWebRTC } from '../hooks/useWebRTC';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export const VideoPlayer = () => {
     const { localStream, remoteStream, connectionState, partnerConnected, searching } = useCallStore();
-
-    // Example usage: Destructure our WebRTC hook
-    const { createOffer } = useWebRTC();
-
-    // 11. Use React refs for video elements
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
 
     useEffect(() => {
-        // 2. Attach the stream to the local video element
         if (localVideoRef.current && localStream) {
             localVideoRef.current.srcObject = localStream;
         }
@@ -27,20 +20,8 @@ export const VideoPlayer = () => {
     }, [remoteStream]);
 
     return (
-        <div className="relative w-full bg-black flex flex-col items-center justify-center overflow-hidden" style={{ height: 'calc(100vh - 140px)' }}>
-
-            {/* Example Usage Button to initiate the connection manually if needed */}
-            {!partnerConnected && !searching && connectionState !== 'disconnected' && (
-                <button
-                    onClick={createOffer}
-                    className="absolute z-50 top-5 bg-brand text-white px-4 py-2 rounded-lg font-semibold hover:bg-brand-hover"
-                >
-                    Start Call (Create Offer)
-                </button>
-            )}
-
-            {/* 9. Bind streams to UI: Remote video fills main screen */}
-            {/* 10. Ensure: autoplay, playsInline */}
+        <div className="relative w-full bg-black" style={{ height: 'calc(100vh - 140px)' }}>
+            {/* Remote Video (Main Area) */}
             <motion.video
                 ref={remoteVideoRef}
                 autoPlay
@@ -74,7 +55,7 @@ export const VideoPlayer = () => {
                 )}
             </AnimatePresence>
 
-            {/* 9. Bind streams to UI: Local video shows in overlay preview */}
+            {/* Local Video Overlay */}
             <AnimatePresence>
                 {localStream && (
                     <motion.div
@@ -84,7 +65,6 @@ export const VideoPlayer = () => {
                         transition={{ duration: 0.2, ease: "easeOut" }}
                         className="absolute bottom-5 right-5 w-[220px] h-[140px] rounded-xl overflow-hidden shadow-2xl border-2 border-surface-border z-10"
                     >
-                        {/* 10. Ensure: autoplay, playsInline, muted on local video */}
                         <video
                             ref={localVideoRef}
                             autoPlay
