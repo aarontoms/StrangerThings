@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { useCallStore } from '../store/useCallStore';
 import { motion, AnimatePresence } from 'framer-motion';
 
@@ -6,6 +6,19 @@ export const VideoPlayer = () => {
     const { localStream, remoteStream, connectionState, partnerConnected, searching } = useCallStore();
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
+    const [debugInfo, setDebugInfo] = useState('');
+
+    useEffect(() => {
+        const interval = setInterval(() => {
+            const pc = (window as any).debugPC as RTCPeerConnection | null;
+            if (pc) {
+                setDebugInfo(`ICE: ${pc.iceConnectionState} | Sig: ${pc.signalingState} | Conn: ${pc.connectionState} | VTracks: ${remoteStream?.getVideoTracks().length || 0}`);
+            } else {
+                setDebugInfo('No PeerConnection');
+            }
+        }, 1000);
+        return () => clearInterval(interval);
+    }, [remoteStream]);
 
     useEffect(() => {
         if (localVideoRef.current && localStream) {
@@ -16,11 +29,17 @@ export const VideoPlayer = () => {
     useEffect(() => {
         if (remoteVideoRef.current && remoteStream) {
             remoteVideoRef.current.srcObject = remoteStream;
+            remoteVideoRef.current.play().catch(e => console.warn("Autoplay blocked:", e));
         }
     }, [remoteStream]);
 
     return (
         <div className="relative w-full bg-black" style={{ height: 'calc(100vh - 140px)' }}>
+            {/* Debug HUD Overlay */}
+            <div className="absolute top-2 left-2 z-50 bg-black/80 text-green-400 font-mono text-[10px] p-2 rounded pointer-events-none">
+                {debugInfo}
+            </div>
+
             {/* Remote Video (Main Area) */}
             <motion.video
                 ref={remoteVideoRef}
