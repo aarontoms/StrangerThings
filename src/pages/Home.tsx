@@ -4,14 +4,12 @@ import { VideoPlayer } from '../components/VideoPlayer';
 import { ControlsBar } from '../components/ControlsBar';
 import { ChatPanel } from '../components/ChatPanel';
 import { useSocket } from '../hooks/useSocket';
-import { useWebRTC } from '../hooks/useWebRTC';
 import clsx from 'clsx';
 import { MessageSquare, X } from 'lucide-react';
 
 export const Home = () => {
-    // Initialize hooks that manage global state lifecycle
+    // Initialize socket lifecycle
     useSocket();
-    useWebRTC();
 
     const [chatOpen, setChatOpen] = useState(false);
 

@@ -1,7 +1,6 @@
-import { useEffect, useRef, useCallback, useState } from 'react';
+import { useEffect, useRef, useCallback } from 'react';
 import { useCallStore } from '../store/useCallStore';
 import toast from 'react-hot-toast';
-
 import { useSocket } from './useSocket';
 
 export const useWebRTC = () => {
@@ -17,11 +16,23 @@ export const useWebRTC = () => {
     } = useCallStore();
 
     const socket = useSocket();
+
+    // Use refs for everything that needs to be accessed inside callbacks
+    // without causing or depending on re-renders
     const peerConnectionRef = useRef<RTCPeerConnection | null>(null);
-    const [roomId, setRoomId] = useState<string | null>(null);
+    const localStreamRef = useRef<MediaStream | null>(null);
     const currentRoomIdRef = useRef<string | null>(null);
     const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
-    const hasJoinedRef = useRef(false);
+    const hasJoined = useRef(false);
+
+    // Keep localStreamRef in sync with Zustand state
+    useEffect(() => {
+        localStreamRef.current = localStream;
+    }, [localStream]);
+
+    const roomIdRef = useRef<string | null>(null);
+
+    // --- Core WebRTC functions (all use refs, no stale closures) ---
 
     const closeConnection = useCallback(() => {
         if (peerConnectionRef.current) {
@@ -29,220 +40,194 @@ export const useWebRTC = () => {
             peerConnectionRef.current.ontrack = null;
             peerConnectionRef.current.close();
             peerConnectionRef.current = null;
+            (window as any).debugPC = null;
         }
         pendingCandidates.current = [];
         setRemoteStream(null);
         setPartnerConnected(false);
     }, [setRemoteStream, setPartnerConnected]);
 
-    const initializeConnection = useCallback((currentRoomId: string) => {
+    const initializeConnection = useCallback((roomId: string) => {
+        // Clean up any existing connection
         if (peerConnectionRef.current) {
-            closeConnection();
+            peerConnectionRef.current.onicecandidate = null;
+            peerConnectionRef.current.ontrack = null;
+            peerConnectionRef.current.close();
+            peerConnectionRef.current = null;
         }
+        pendingCandidates.current = [];
 
-        const peerConnection = new RTCPeerConnection({
+        const pc = new RTCPeerConnection({
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' }
+                { urls: 'stun:stun1.l.google.com:19302' },
             ]
         });
 
-        // Add local tracks
-        if (localStream) {
-            localStream.getTracks().forEach(track => {
-                peerConnection.addTrack(track, localStream);
-            });
+        // Add local tracks from ref (avoids stale closure over localStream state)
+        const stream = localStreamRef.current;
+        if (stream) {
+            stream.getTracks().forEach(track => pc.addTrack(track, stream));
         }
 
-        // Handle ICE candidates
-        peerConnection.onicecandidate = (event) => {
-            if (event.candidate && socket && currentRoomId) {
-                socket.emit('ice-candidate', { roomId: currentRoomId, candidate: event.candidate });
+        pc.onicecandidate = (event) => {
+            if (event.candidate && socket) {
+                socket.emit('ice-candidate', { roomId, candidate: event.candidate });
             }
         };
 
-        // Handle remote stream
-        peerConnection.ontrack = (event) => {
-            if (event.streams && event.streams.length > 0) {
-                setRemoteStream(event.streams[0]);
-            } else {
-                setRemoteStream(new MediaStream([event.track]));
-            }
+        pc.ontrack = (event) => {
+            const remoteStream = event.streams?.[0] ?? new MediaStream([event.track]);
+            setRemoteStream(remoteStream);
             setPartnerConnected(true);
             setConnectionState('connected');
             setSearching(false);
         };
 
-        peerConnectionRef.current = peerConnection;
-        (window as any).debugPC = peerConnection;
-        return peerConnection;
-    }, [localStream, socket, closeConnection, setRemoteStream, setPartnerConnected, setConnectionState, setSearching]);
+        peerConnectionRef.current = pc;
+        (window as any).debugPC = pc;
+        return pc;
+    }, [socket, setRemoteStream, setPartnerConnected, setConnectionState, setSearching]);
 
-    const createOffer = useCallback(async (currentRoomId: string) => {
-        const peerConnection = peerConnectionRef.current;
-        if (!peerConnection) {
-            console.error('No peer connection to offer on!');
-            return;
-        }
+    const createOffer = useCallback(async (roomId: string) => {
+        const pc = initializeConnection(roomId);
         try {
-            const offer = await peerConnection.createOffer();
-            await peerConnection.setLocalDescription(offer);
-            if (socket) {
-                socket.emit('offer', { roomId: currentRoomId, offer });
-            }
-        } catch (error) {
-            console.error('Error creating offer:', error);
+            const offer = await pc.createOffer();
+            await pc.setLocalDescription(offer);
+            socket?.emit('offer', { roomId, offer });
+        } catch (err) {
+            console.error('createOffer failed:', err);
         }
-    }, [socket]);
+    }, [initializeConnection, socket]);
 
-    const createAnswer = useCallback(async (offer: RTCSessionDescriptionInit, currentRoomId: string) => {
-        const peerConnection = peerConnectionRef.current;
-        if (!peerConnection) {
-            console.error('No peer connection to answer on!');
-            return;
-        }
+    const createAnswer = useCallback(async (offer: RTCSessionDescriptionInit, roomId: string) => {
+        const pc = peerConnectionRef.current;
+        if (!pc) { console.error('createAnswer: no peer connection'); return; }
         try {
-            await peerConnection.setRemoteDescription(new RTCSessionDescription(offer));
-
+            await pc.setRemoteDescription(new RTCSessionDescription(offer));
+            // Flush any queued ICE candidates
             while (pendingCandidates.current.length > 0) {
-                const candidate = pendingCandidates.current.shift();
-                if (candidate) {
-                    try {
-                        await peerConnection.addIceCandidate(new RTCIceCandidate(candidate));
-                    } catch (e) {
-                        console.error('Failed to add pending ICE', e);
-                    }
-                }
+                const c = pendingCandidates.current.shift();
+                if (c) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
             }
-
-            const answer = await peerConnection.createAnswer();
-            await peerConnection.setLocalDescription(answer);
-            if (socket) {
-                socket.emit('answer', { roomId: currentRoomId, answer });
-            }
-        } catch (error) {
-            console.error('Error creating answer:', error);
+            const answer = await pc.createAnswer();
+            await pc.setLocalDescription(answer);
+            socket?.emit('answer', { roomId, answer });
+        } catch (err) {
+            console.error('createAnswer failed:', err);
         }
     }, [socket]);
 
     const handleAnswer = useCallback(async (answer: RTCSessionDescriptionInit) => {
+        const pc = peerConnectionRef.current;
+        if (!pc) return;
         try {
-            if (peerConnectionRef.current) {
-                await peerConnectionRef.current.setRemoteDescription(new RTCSessionDescription(answer));
-
-                while (pendingCandidates.current.length > 0) {
-                    const candidate = pendingCandidates.current.shift();
-                    if (candidate) {
-                        try {
-                            await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-                        } catch (e) {
-                            console.error('Failed to add pending ICE on answer', e);
-                        }
-                    }
-                }
+            await pc.setRemoteDescription(new RTCSessionDescription(answer));
+            // Flush any queued ICE candidates
+            while (pendingCandidates.current.length > 0) {
+                const c = pendingCandidates.current.shift();
+                if (c) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
             }
-        } catch (error) {
-            console.error('Error handling answer:', error);
+        } catch (err) {
+            console.error('handleAnswer failed:', err);
         }
     }, []);
 
     const addIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
-        try {
-            if (peerConnectionRef.current) {
-                if (peerConnectionRef.current.remoteDescription) {
-                    await peerConnectionRef.current.addIceCandidate(new RTCIceCandidate(candidate));
-                } else {
-                    pendingCandidates.current.push(candidate);
-                }
-            }
-        } catch (error) {
-            console.error('Error adding ICE candidate:', error);
+        const pc = peerConnectionRef.current;
+        if (!pc) return;
+        if (pc.remoteDescription) {
+            pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
+        } else {
+            pendingCandidates.current.push(candidate);
         }
     }, []);
 
-    // Auto-join only once media is ready
+    // --- Camera initialization (runs once) ---
     useEffect(() => {
-        if (socket && localStream && !hasJoinedRef.current) {
-            hasJoinedRef.current = true;
-            socket.emit("join"); // Start finding a partner
+        const initCamera = async () => {
+            try {
+                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+                setLocalStream(stream);
+                localStreamRef.current = stream;
+            } catch (err) {
+                console.error('Camera error:', err);
+                toast.error('Could not access camera and microphone.');
+            }
+        };
+        if (!localStreamRef.current) {
+            initCamera();
         }
-    }, [socket, localStream]);
+        return () => {
+            localStreamRef.current?.getTracks().forEach(t => t.stop());
+        };
+    }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // Set up socket listeners
+    // --- Socket event listeners + join (runs once when socket is ready) ---
     useEffect(() => {
         if (!socket) return;
 
-        const handleMatched = ({ roomId: newRoomId, initiator }: { roomId: string, initiator: boolean }) => {
-            setRoomId(newRoomId);
+        const onMatched = ({ roomId: newRoomId, initiator }: { roomId: string; initiator: boolean }) => {
+            console.log('Matched! Room:', newRoomId, 'Initiator:', initiator);
             currentRoomIdRef.current = newRoomId;
+            roomIdRef.current = newRoomId;
             initializeConnection(newRoomId);
             if (initiator) {
                 createOffer(newRoomId);
             }
         };
 
-        const handleOffer = (offer: RTCSessionDescriptionInit) => {
-            if (currentRoomIdRef.current) {
-                createAnswer(offer, currentRoomIdRef.current);
-            }
+        const onOffer = (offer: RTCSessionDescriptionInit) => {
+            const roomId = currentRoomIdRef.current;
+            if (roomId) createAnswer(offer, roomId);
         };
 
-        const handlePartnerLeft = () => {
+        const onPartnerLeft = () => {
             closeConnection();
             currentRoomIdRef.current = null;
+            roomIdRef.current = null;
             setConnectionState('partner_left');
         };
 
-        socket.on('matched', handleMatched);
-        socket.on('offer', handleOffer);
+        socket.on('matched', onMatched);
+        socket.on('offer', onOffer);
         socket.on('answer', handleAnswer);
         socket.on('ice-candidate', addIceCandidate);
-        socket.on('partner-left', handlePartnerLeft);
+        socket.on('partner-left', onPartnerLeft);
+
+        // Emit join once camera is ready, or wait for it
+        const tryJoin = () => {
+            if (localStreamRef.current && !hasJoined.current) {
+                hasJoined.current = true;
+                console.log('Emitting join...');
+                socket.emit('join');
+                setConnectionState('searching');
+                setSearching(true);
+            }
+        };
+
+        tryJoin();
+        // Poll every 200ms until camera is ready (handles async camera load)
+        const joinInterval = setInterval(() => {
+            if (hasJoined.current) { clearInterval(joinInterval); return; }
+            tryJoin();
+        }, 200);
 
         return () => {
-            socket.off('matched', handleMatched);
-            socket.off('offer', handleOffer);
+            clearInterval(joinInterval);
+            socket.off('matched', onMatched);
+            socket.off('offer', onOffer);
             socket.off('answer', handleAnswer);
             socket.off('ice-candidate', addIceCandidate);
-            socket.off('partner-left', handlePartnerLeft);
+            socket.off('partner-left', onPartnerLeft);
         };
-    }, [socket, createOffer, createAnswer, handleAnswer, addIceCandidate, closeConnection, setConnectionState, initializeConnection]);
+    }, [socket]); // ← ONLY depends on socket. All other values read from refs.
 
-    // Initialize camera
-    useEffect(() => {
-        const initCamera = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({
-                    video: true,
-                    audio: true,
-                });
-                setLocalStream(stream);
-            } catch (err) {
-                console.error('Error accessing media devices.', err);
-                toast.error('Could not access camera and microphone.');
-            }
-        };
-
-        if (!localStream) {
-            initCamera();
-        }
-
-        return () => {
-            if (localStream) {
-                localStream.getTracks().forEach((track) => track.stop());
-            }
-        };
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
-
-    // Sync mute/video state
+    // --- Sync mute/camera state ---
     useEffect(() => {
         if (localStream) {
-            localStream.getAudioTracks().forEach(track => {
-                track.enabled = !isMuted;
-            });
-            localStream.getVideoTracks().forEach(track => {
-                track.enabled = cameraOn;
-            });
+            localStream.getAudioTracks().forEach(t => { t.enabled = !isMuted; });
+            localStream.getVideoTracks().forEach(t => { t.enabled = cameraOn; });
         }
     }, [localStream, isMuted, cameraOn]);
 
@@ -250,28 +235,26 @@ export const useWebRTC = () => {
         closeConnection();
         setConnectionState('searching');
         setSearching(true);
-        if (socket && roomId) {
-            socket.emit('skip', { roomId });
+        if (socket && roomIdRef.current) {
+            socket.emit('skip', { roomId: roomIdRef.current });
         }
-        setRoomId(null);
         currentRoomIdRef.current = null;
-        if (socket) {
-            socket.emit('join');
-        }
-    }, [closeConnection, setConnectionState, setSearching, socket, roomId]);
+        roomIdRef.current = null;
+        hasJoined.current = false; // allow re-join
+        if (socket) socket.emit('join');
+    }, [closeConnection, setConnectionState, setSearching, socket]);
 
     const end = useCallback(() => {
-        if (localStream) {
-            localStream.getTracks().forEach(track => track.stop());
-        }
+        localStreamRef.current?.getTracks().forEach(t => t.stop());
         setLocalStream(null);
+        localStreamRef.current = null;
         closeConnection();
         setConnectionState('disconnected');
         setSearching(false);
-        if (socket && roomId) {
-            socket.emit('end', { roomId }); // End also signals partner leaving to server if desired
+        if (socket && roomIdRef.current) {
+            socket.emit('end', { roomId: roomIdRef.current });
         }
-    }, [localStream, closeConnection, setLocalStream, setConnectionState, setSearching, socket, roomId]);
+    }, [closeConnection, setLocalStream, setConnectionState, setSearching, socket]);
 
-    return { skip, end, createOffer, createAnswer, handleAnswer, addIceCandidate, closeConnection };
+    return { skip, end };
 };
