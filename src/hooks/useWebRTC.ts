@@ -1,7 +1,7 @@
 import { useEffect, useRef, useCallback } from 'react';
 import { useCallStore } from '../store/useCallStore';
 import toast from 'react-hot-toast';
-import { useSocket } from './useSocket';
+import { useSocket, BACKEND_URL } from './useSocket';
 
 export const useWebRTC = () => {
     const {
@@ -24,6 +24,29 @@ export const useWebRTC = () => {
     const currentRoomIdRef = useRef<string | null>(null);
     const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
     const hasJoined = useRef(false);
+    const hasFetchedIce = useRef(false);
+    const iceServersRef = useRef<RTCIceServer[]>([
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+    ]);
+
+    useEffect(() => {
+        const fetchIce = async () => {
+            try {
+                const res = await fetch(`${BACKEND_URL}/api/ice-servers`);
+                const data = await res.json();
+                if (data && data.iceServers) {
+                    iceServersRef.current = data.iceServers;
+                    console.log('[WebRTC] Fetched secure ICE config from backend.');
+                }
+            } catch (err) {
+                console.error('[WebRTC] Failed to fetch backend config, using fallback STUN', err);
+            } finally {
+                hasFetchedIce.current = true;
+            }
+        };
+        fetchIce();
+    }, []);
 
     // Keep localStreamRef in sync with Zustand state
     useEffect(() => {
@@ -58,20 +81,7 @@ export const useWebRTC = () => {
         pendingCandidates.current = [];
 
         const pc = new RTCPeerConnection({
-            iceServers: [
-                { urls: 'stun:stun.l.google.com:19302' },
-                { urls: 'stun:stun1.l.google.com:19302' },
-                {
-                    urls: import.meta.env.TURN_URL || 'turn:openrelay.metered.ca:80',
-                    username: import.meta.env.TURN_USERNAME || 'openrelayproject',
-                    credential: import.meta.env.TURN_CREDENTIAL || 'openrelayproject',
-                },
-                {
-                    urls: import.meta.env.TURN_URL_TCP || 'turn:openrelay.metered.ca:443?transport=tcp',
-                    username: import.meta.env.TURN_USERNAME || 'openrelayproject',
-                    credential: import.meta.env.TURN_CREDENTIAL || 'openrelayproject',
-                }
-            ],
+            iceServers: iceServersRef.current,
             iceCandidatePoolSize: 10
         });
 
@@ -262,7 +272,7 @@ export const useWebRTC = () => {
 
         // Emit join once camera is ready, or wait for it
         const tryJoin = () => {
-            if (localStreamRef.current && !hasJoined.current) {
+            if (localStreamRef.current && hasFetchedIce.current && !hasJoined.current) {
                 hasJoined.current = true;
                 console.log('Emitting join...');
                 socket.emit('join');
