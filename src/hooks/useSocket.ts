@@ -2,7 +2,9 @@ import { useEffect } from 'react';
 import { io, Socket } from 'socket.io-client';
 
 // Initialize the socket outside the hook to ensure ONLY ONE instance exists globally
-const socket: Socket = io('http://localhost:3000', {
+const BACKEND_URL = import.meta.env.VITE_BACKEND_URL || 'http://localhost:3000';
+
+const socket: Socket = io(BACKEND_URL, {
     autoConnect: false
 });
 
