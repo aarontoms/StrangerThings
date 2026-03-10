@@ -61,9 +61,21 @@ export const useWebRTC = () => {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
-                { urls: 'stun:stun2.l.google.com:19302' },
-                { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' }
+                {
+                    urls: 'turn:openrelay.metered.ca:80',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject',
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject',
+                },
+                {
+                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
+                    username: 'openrelayproject',
+                    credential: 'openrelayproject',
+                }
             ]
         });
 
@@ -75,17 +87,25 @@ export const useWebRTC = () => {
 
         pc.onicecandidate = (event) => {
             if (event.candidate && socket) {
+                console.log('[WebRTC] Local ICE candidate generated', event.candidate.candidate);
                 socket.emit('ice-candidate', { roomId, candidate: event.candidate });
+            } else {
+                console.log('[WebRTC] Local ICE candidate gathering complete');
             }
         };
 
         pc.ontrack = (event) => {
+            console.log('[WebRTC] Received remote track', event.track.kind);
             const remoteStream = event.streams?.[0] ?? new MediaStream([event.track]);
             setRemoteStream(remoteStream);
             setPartnerConnected(true);
             setConnectionState('connected');
             setSearching(false);
         };
+
+        pc.oniceconnectionstatechange = () => console.log('[WebRTC] ICE Connection State:', pc.iceConnectionState);
+        pc.onconnectionstatechange = () => console.log('[WebRTC] Full Connection State:', pc.connectionState);
+        pc.onsignalingstatechange = () => console.log('[WebRTC] Signaling State:', pc.signalingState);
 
         peerConnectionRef.current = pc;
         (window as any).debugPC = pc;
@@ -96,29 +116,34 @@ export const useWebRTC = () => {
         const pc = peerConnectionRef.current;
         if (!pc) return;
         try {
+            console.log('[WebRTC] Creating Offer');
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
             socket?.emit('offer', { roomId, offer });
         } catch (err) {
-            console.error('createOffer failed:', err);
+            console.error('[WebRTC] createOffer failed:', err);
         }
-    }, [initializeConnection, socket]);
+    }, [socket]);
 
     const createAnswer = useCallback(async (offer: RTCSessionDescriptionInit, roomId: string) => {
         const pc = peerConnectionRef.current;
-        if (!pc) { console.error('createAnswer: no peer connection'); return; }
+        if (!pc) { console.error('[WebRTC] createAnswer: no peer connection'); return; }
         try {
+            console.log('[WebRTC] Creating Answer. Applying remote offer...');
             await pc.setRemoteDescription(new RTCSessionDescription(offer));
             // Flush any queued ICE candidates
             while (pendingCandidates.current.length > 0) {
                 const c = pendingCandidates.current.shift();
-                if (c) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+                if (c) {
+                    console.log('[WebRTC] Emptying queued ICE candidate queue...');
+                    await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+                }
             }
             const answer = await pc.createAnswer();
             await pc.setLocalDescription(answer);
             socket?.emit('answer', { roomId, answer });
         } catch (err) {
-            console.error('createAnswer failed:', err);
+            console.error('[WebRTC] createAnswer failed:', err);
         }
     }, [socket]);
 
@@ -126,23 +151,29 @@ export const useWebRTC = () => {
         const pc = peerConnectionRef.current;
         if (!pc) return;
         try {
+            console.log('[WebRTC] Received remote Answer.');
             await pc.setRemoteDescription(new RTCSessionDescription(answer));
             // Flush any queued ICE candidates
             while (pendingCandidates.current.length > 0) {
                 const c = pendingCandidates.current.shift();
-                if (c) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+                if (c) {
+                    console.log('[WebRTC] Emptying queued ICE candidate queue (after answer)...');
+                    await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+                }
             }
         } catch (err) {
-            console.error('handleAnswer failed:', err);
+            console.error('[WebRTC] handleAnswer failed:', err);
         }
     }, []);
 
     const addIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
         const pc = peerConnectionRef.current;
         if (!pc) return;
+        console.log('[WebRTC] Received remote ICE candidate', candidate.candidate);
         if (pc.remoteDescription) {
             pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
         } else {
+            console.log('[WebRTC] Queuing ICE candidate (No remote description yet)');
             pendingCandidates.current.push(candidate);
         }
     }, []);
