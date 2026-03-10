@@ -145,21 +145,41 @@ export const useWebRTC = () => {
 
     // --- Camera initialization (runs once) ---
     useEffect(() => {
+        let isMounted = true;
+        let activeStream: MediaStream | null = null;
+
         const initCamera = async () => {
             try {
                 const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+
+                // If React immediately unmounted the component (StrictMode), free the hardware immediately
+                if (!isMounted) {
+                    stream.getTracks().forEach(t => t.stop());
+                    return;
+                }
+
+                activeStream = stream;
                 setLocalStream(stream);
                 localStreamRef.current = stream;
-            } catch (err) {
-                console.error('Camera error:', err);
-                toast.error('Could not access camera and microphone.');
+            } catch (err: any) {
+                if (isMounted) {
+                    console.error('Camera error:', err);
+                    const errorMsg = err.name === 'NotAllowedError' || err.name === 'SecurityError' ? 'Permissions denied.' : err.name === 'NotFoundError' ? 'Device not found.' : err.message;
+                    toast.error(`Could not connect to camera: ${errorMsg}`);
+                }
             }
         };
+
         if (!localStreamRef.current) {
             initCamera();
         }
+
         return () => {
-            localStreamRef.current?.getTracks().forEach(t => t.stop());
+            isMounted = false;
+            // Free the hardware lock so immediate remount accesses it successfully
+            if (activeStream) {
+                activeStream.getTracks().forEach(t => t.stop());
+            }
         };
     }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
