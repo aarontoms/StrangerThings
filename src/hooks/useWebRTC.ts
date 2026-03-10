@@ -62,21 +62,17 @@ export const useWebRTC = () => {
                 { urls: 'stun:stun.l.google.com:19302' },
                 { urls: 'stun:stun1.l.google.com:19302' },
                 {
-                    urls: 'turn:openrelay.metered.ca:80',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject',
+                    urls: import.meta.env.TURN_URL || 'turn:openrelay.metered.ca:80',
+                    username: import.meta.env.TURN_USERNAME || 'openrelayproject',
+                    credential: import.meta.env.TURN_CREDENTIAL || 'openrelayproject',
                 },
                 {
-                    urls: 'turn:openrelay.metered.ca:443',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject',
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject',
+                    urls: import.meta.env.TURN_URL_TCP || 'turn:openrelay.metered.ca:443?transport=tcp',
+                    username: import.meta.env.TURN_USERNAME || 'openrelayproject',
+                    credential: import.meta.env.TURN_CREDENTIAL || 'openrelayproject',
                 }
-            ]
+            ],
+            iceCandidatePoolSize: 10
         });
 
         // Add local tracks from ref (avoids stale closure over localStream state)
