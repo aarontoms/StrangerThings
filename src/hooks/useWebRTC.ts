@@ -63,22 +63,7 @@ export const useWebRTC = () => {
                 { urls: 'stun:stun1.l.google.com:19302' },
                 { urls: 'stun:stun2.l.google.com:19302' },
                 { urls: 'stun:stun3.l.google.com:19302' },
-                { urls: 'stun:stun4.l.google.com:19302' },
-                {
-                    urls: 'turn:openrelay.metered.ca:80',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject',
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject',
-                },
-                {
-                    urls: 'turn:openrelay.metered.ca:443?transport=tcp',
-                    username: 'openrelayproject',
-                    credential: 'openrelayproject',
-                }
+                { urls: 'stun:stun4.l.google.com:19302' }
             ]
         });
 
@@ -108,7 +93,8 @@ export const useWebRTC = () => {
     }, [socket, setRemoteStream, setPartnerConnected, setConnectionState, setSearching]);
 
     const createOffer = useCallback(async (roomId: string) => {
-        const pc = initializeConnection(roomId);
+        const pc = peerConnectionRef.current;
+        if (!pc) return;
         try {
             const offer = await pc.createOffer();
             await pc.setLocalDescription(offer);
@@ -215,9 +201,23 @@ export const useWebRTC = () => {
             }
         };
 
-        const onOffer = (offer: RTCSessionDescriptionInit) => {
-            const roomId = currentRoomIdRef.current;
+        const onOfferWrapper = (payload: any) => {
+            // Check if backend nested the payload as { roomId, offer }
+            const offer = payload.roomId ? payload.offer : payload;
+            const roomId = payload.roomId || currentRoomIdRef.current;
             if (roomId) createAnswer(offer, roomId);
+        };
+
+        const onAnswerWrapper = (payload: any) => {
+            const answer = payload.roomId ? payload.answer : payload;
+            handleAnswer(answer);
+        };
+
+        const onIceCandidateWrapper = (payload: any) => {
+            // DO NOT check `payload.candidate` because the actual RTCIceCandidate object
+            // also has a `.candidate` string property. Checking `.roomId` is safe.
+            const candidate = payload.roomId ? payload.candidate : payload;
+            addIceCandidate(candidate);
         };
 
         const onPartnerLeft = () => {
@@ -228,9 +228,9 @@ export const useWebRTC = () => {
         };
 
         socket.on('matched', onMatched);
-        socket.on('offer', onOffer);
-        socket.on('answer', handleAnswer);
-        socket.on('ice-candidate', addIceCandidate);
+        socket.on('offer', onOfferWrapper);
+        socket.on('answer', onAnswerWrapper);
+        socket.on('ice-candidate', onIceCandidateWrapper);
         socket.on('partner-left', onPartnerLeft);
 
         // Emit join once camera is ready, or wait for it
@@ -254,9 +254,9 @@ export const useWebRTC = () => {
         return () => {
             clearInterval(joinInterval);
             socket.off('matched', onMatched);
-            socket.off('offer', onOffer);
-            socket.off('answer', handleAnswer);
-            socket.off('ice-candidate', addIceCandidate);
+            socket.off('offer', onOfferWrapper);
+            socket.off('answer', onAnswerWrapper);
+            socket.off('ice-candidate', onIceCandidateWrapper);
             socket.off('partner-left', onPartnerLeft);
         };
     }, [socket]); // ← ONLY depends on socket. All other values read from refs.
