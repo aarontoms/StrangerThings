@@ -82,7 +82,8 @@ export const useWebRTC = () => {
 
         const pc = new RTCPeerConnection({
             iceServers: iceServersRef.current,
-            iceCandidatePoolSize: 10
+            iceCandidatePoolSize: 10,
+            iceTransportPolicy: 'relay' // Force WebRTC over TURN for testing
         });
 
         // Add local tracks from ref (avoids stale closure over localStream state)
