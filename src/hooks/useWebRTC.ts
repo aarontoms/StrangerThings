@@ -28,6 +28,9 @@ export const useWebRTC = () => {
     const pendingCandidates = useRef<RTCIceCandidateInit[]>([]);
     const hasJoined = useRef(false);
     const hasFetchedIce = useRef(false);
+    const isInitiatorRef = useRef(false);
+    const makingOfferRef = useRef(false);
+    const ignoreOfferRef = useRef(false);
     const iceServersRef = useRef<RTCIceServer[]>([
         { urls: 'stun:stun.l.google.com:19302' },
         { urls: 'stun:stun1.l.google.com:19302' }
@@ -116,90 +119,34 @@ export const useWebRTC = () => {
         pc.onconnectionstatechange = () => console.log('[WebRTC] Full Connection State:', pc.connectionState);
         pc.onsignalingstatechange = () => console.log('[WebRTC] Signaling State:', pc.signalingState);
 
-        // Negotiate gracefully if tracks are dynamically added (e.g. from missing permissions)
+        // Negotiate gracefully (Perfect Negotiation Pattern)
         pc.onnegotiationneeded = async () => {
             try {
-                if (pc.signalingState !== "stable") return;
+                makingOfferRef.current = true;
                 const offer = await pc.createOffer();
+                if (pc.signalingState !== "stable") return;
                 await pc.setLocalDescription(offer);
                 if (socket && currentRoomIdRef.current) {
                      socket.emit('offer', { roomId: currentRoomIdRef.current, offer });
                 }
             } catch (e) {
                 console.error('[WebRTC] Renegotiation error:', e);
+            } finally {
+                makingOfferRef.current = false;
             }
         };
+
+        // Guarantee negotiation triggers for the initiator even if no camera is allowed
+        if (isInitiatorRef.current) {
+            pc.createDataChannel('strangerthings');
+        }
 
         peerConnectionRef.current = pc;
         (window as any).debugPC = pc;
         return pc;
     }, [socket, setRemoteStream, setPartnerConnected, setConnectionState, setSearching]);
 
-    const createOffer = useCallback(async (roomId: string) => {
-        const pc = peerConnectionRef.current;
-        if (!pc) return;
-        try {
-            console.log('[WebRTC] Creating Offer');
-            const offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            socket?.emit('offer', { roomId, offer });
-        } catch (err) {
-            console.error('[WebRTC] createOffer failed:', err);
-        }
-    }, [socket]);
 
-    const createAnswer = useCallback(async (offer: RTCSessionDescriptionInit, roomId: string) => {
-        const pc = peerConnectionRef.current;
-        if (!pc) { console.error('[WebRTC] createAnswer: no peer connection'); return; }
-        try {
-            console.log('[WebRTC] Creating Answer. Applying remote offer...');
-            await pc.setRemoteDescription(new RTCSessionDescription(offer));
-            // Flush any queued ICE candidates
-            while (pendingCandidates.current.length > 0) {
-                const c = pendingCandidates.current.shift();
-                if (c) {
-                    console.log('[WebRTC] Emptying queued ICE candidate queue...');
-                    await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
-                }
-            }
-            const answer = await pc.createAnswer();
-            await pc.setLocalDescription(answer);
-            socket?.emit('answer', { roomId, answer });
-        } catch (err) {
-            console.error('[WebRTC] createAnswer failed:', err);
-        }
-    }, [socket]);
-
-    const handleAnswer = useCallback(async (answer: RTCSessionDescriptionInit) => {
-        const pc = peerConnectionRef.current;
-        if (!pc) return;
-        try {
-            console.log('[WebRTC] Received remote Answer.');
-            await pc.setRemoteDescription(new RTCSessionDescription(answer));
-            // Flush any queued ICE candidates
-            while (pendingCandidates.current.length > 0) {
-                const c = pendingCandidates.current.shift();
-                if (c) {
-                    console.log('[WebRTC] Emptying queued ICE candidate queue (after answer)...');
-                    await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
-                }
-            }
-        } catch (err) {
-            console.error('[WebRTC] handleAnswer failed:', err);
-        }
-    }, []);
-
-    const addIceCandidate = useCallback(async (candidate: RTCIceCandidateInit) => {
-        const pc = peerConnectionRef.current;
-        if (!pc) return;
-        console.log('[WebRTC] Received remote ICE candidate', candidate.candidate);
-        if (pc.remoteDescription) {
-            pc.addIceCandidate(new RTCIceCandidate(candidate)).catch(console.error);
-        } else {
-            console.log('[WebRTC] Queuing ICE candidate (No remote description yet)');
-            pendingCandidates.current.push(candidate);
-        }
-    }, []);
 
     // --- Camera initialization ---
     const requestMedia = useCallback(async () => {
@@ -242,33 +189,81 @@ export const useWebRTC = () => {
 
         const onMatched = ({ roomId: newRoomId, initiator }: { roomId: string; initiator: boolean }) => {
             console.log('Matched! Room:', newRoomId, 'Initiator:', initiator);
+            isInitiatorRef.current = initiator;
             currentRoomIdRef.current = newRoomId;
             roomIdRef.current = newRoomId;
             setRoomId(newRoomId);
             clearMessages();
             initializeConnection(newRoomId);
-            if (initiator) {
-                createOffer(newRoomId);
+        };
+
+        const onOfferWrapper = async (payload: any) => {
+            const offer = payload.roomId ? payload.offer : payload;
+            const roomId = payload.roomId || currentRoomIdRef.current;
+            if (!roomId) return;
+            const pc = peerConnectionRef.current;
+            if (!pc) return;
+
+            const polite = !isInitiatorRef.current;
+            const offerCollision = makingOfferRef.current || pc.signalingState !== "stable";
+            ignoreOfferRef.current = !polite && offerCollision;
+
+            if (ignoreOfferRef.current) {
+                console.log('[WebRTC] Ignoring colliding offer (impolite peer)');
+                return;
+            }
+
+            try {
+                console.log('[WebRTC] Creating Answer. Applying remote offer...');
+                await pc.setRemoteDescription(new RTCSessionDescription(offer));
+                
+                while (pendingCandidates.current.length > 0) {
+                    const c = pendingCandidates.current.shift();
+                    if (c) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+                }
+
+                const answer = await pc.createAnswer();
+                await pc.setLocalDescription(answer);
+                socket.emit('answer', { roomId, answer });
+            } catch (err) {
+                console.error('[WebRTC] Handle Offer failed:', err);
             }
         };
 
-        const onOfferWrapper = (payload: any) => {
-            // Check if backend nested the payload as { roomId, offer }
-            const offer = payload.roomId ? payload.offer : payload;
-            const roomId = payload.roomId || currentRoomIdRef.current;
-            if (roomId) createAnswer(offer, roomId);
-        };
-
-        const onAnswerWrapper = (payload: any) => {
+        const onAnswerWrapper = async (payload: any) => {
             const answer = payload.roomId ? payload.answer : payload;
-            handleAnswer(answer);
+            const pc = peerConnectionRef.current;
+            if (!pc) return;
+            try {
+                if (pc.signalingState === "stable") return;
+                console.log('[WebRTC] Received remote Answer.');
+                await pc.setRemoteDescription(new RTCSessionDescription(answer));
+                
+                while (pendingCandidates.current.length > 0) {
+                    const c = pendingCandidates.current.shift();
+                    if (c) await pc.addIceCandidate(new RTCIceCandidate(c)).catch(console.error);
+                }
+            } catch (err) {
+                console.error('[WebRTC] handleAnswer failed:', err);
+            }
         };
 
-        const onIceCandidateWrapper = (payload: any) => {
-            // DO NOT check `payload.candidate` because the actual RTCIceCandidate object
-            // also has a `.candidate` string property. Checking `.roomId` is safe.
+        const onIceCandidateWrapper = async (payload: any) => {
             const candidate = payload.roomId ? payload.candidate : payload;
-            addIceCandidate(candidate);
+            const pc = peerConnectionRef.current;
+            if (!pc) return;
+
+            try {
+                if (ignoreOfferRef.current) return;
+                console.log('[WebRTC] Received remote ICE candidate', candidate.candidate);
+                if (pc.remoteDescription) {
+                    await pc.addIceCandidate(new RTCIceCandidate(candidate));
+                } else {
+                    pendingCandidates.current.push(candidate);
+                }
+            } catch (e) {
+                console.error(e);
+            }
         };
 
         const onChatMessage = (message: string) => {
