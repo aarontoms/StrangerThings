@@ -1,5 +1,5 @@
 import { useEffect } from 'react';
-import { Mic, MicOff, Video, VideoOff, PhoneOff, FastForward } from 'lucide-react';
+import { Mic, MicOff, Video, VideoOff, FastForward } from 'lucide-react';
 import { motion } from 'framer-motion';
 import { useCallStore } from '../store/useCallStore';
 import { useWebRTC } from '../hooks/useWebRTC';
@@ -7,7 +7,7 @@ import clsx from 'clsx';
 
 export const ControlsBar = () => {
     const { isMuted, cameraOn, setIsMuted, setCameraOn, connectionState } = useCallStore();
-    const { skip, end } = useWebRTC();
+    const { skip, requestMedia } = useWebRTC();
 
     const isConnecting = connectionState === 'connecting';
 
@@ -21,8 +21,8 @@ export const ControlsBar = () => {
         return () => window.removeEventListener('keydown', handleKeyDown);
     }, [skip, isConnecting]);
 
-    const toggleMic = () => setIsMuted(!isMuted);
-    const toggleCamera = () => setCameraOn(!cameraOn);
+    const toggleMic = () => { setIsMuted(!isMuted); requestMedia(); };
+    const toggleCamera = () => { setCameraOn(!cameraOn); requestMedia(); };
 
     return (
         <div className="h-[84px] bg-surface-panel border-t border-surface-border flex items-center justify-center gap-[18px] shrink-0">
@@ -69,18 +69,6 @@ export const ControlsBar = () => {
                 <FastForward size={20} fill="currentColor" />
                 Skip
             </motion.button>
-
-            {/* End Button */}
-            <motion.button
-                whileHover={{ scale: 1.05 }}
-                whileTap={{ scale: 0.95 }}
-                onClick={end}
-                className="w-14 h-14 rounded-full bg-danger hover:bg-red-600 flex items-center justify-center text-white transition-colors duration-200 outline-none"
-                aria-label="End call"
-            >
-                <PhoneOff size={22} />
-            </motion.button>
-
         </div>
     );
 };

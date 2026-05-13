@@ -3,7 +3,7 @@ import { useCallStore } from '../store/useCallStore';
 import { motion, AnimatePresence } from 'framer-motion';
 
 export const VideoPlayer = () => {
-    const { localStream, remoteStream, connectionState, partnerConnected, searching } = useCallStore();
+    const { localStream, remoteStream, connectionState, partnerConnected, searching, isBackendOffline } = useCallStore();
     const localVideoRef = useRef<HTMLVideoElement>(null);
     const remoteVideoRef = useRef<HTMLVideoElement>(null);
     const [debugInfo, setDebugInfo] = useState('');
@@ -61,14 +61,19 @@ export const VideoPlayer = () => {
                         transition={{ duration: 0.2 }}
                         className="absolute inset-0 flex items-center justify-center pointer-events-none"
                     >
-                        <div className="bg-black/60 px-6 py-4 rounded-xl text-base text-gray-50 backdrop-blur-sm">
-                            {searching
-                                ? "Searching for stranger..."
+                        <div className="bg-black/60 px-6 py-4 rounded-xl text-base text-gray-50 backdrop-blur-sm shadow-xl border border-surface-border text-center flex flex-col items-center gap-1">
+                            {isBackendOffline ? (
+                                <>
+                                    <span className="text-danger font-semibold text-lg">Backend Offline</span>
+                                    <span className="text-gray-400 text-sm">Attempting to reconnect...</span>
+                                </>
+                            ) : searching
+                                ? <span>Searching for stranger...</span>
                                 : connectionState === 'partner_left'
-                                    ? "Stranger disconnected"
+                                    ? <span>Stranger disconnected</span>
                                     : connectionState === 'connecting'
-                                        ? "Connecting..."
-                                        : "Ready to start"}
+                                        ? <span>Connecting...</span>
+                                        : <span>Ready to start</span>}
                         </div>
                     </motion.div>
                 )}

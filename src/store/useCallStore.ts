@@ -2,6 +2,12 @@ import { create } from 'zustand';
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'searching' | 'partner_left';
 
+export type Message = {
+    id: string;
+    sender: 'you' | 'stranger';
+    text: string;
+};
+
 interface CallState {
     connectionState: ConnectionState;
     localStream: MediaStream | null;
@@ -10,6 +16,10 @@ interface CallState {
     cameraOn: boolean;
     partnerConnected: boolean;
     searching: boolean;
+    roomId: string | null;
+    messages: Message[];
+    onlineCount: number;
+    isBackendOffline: boolean;
 
     setConnectionState: (state: ConnectionState) => void;
     setLocalStream: (stream: MediaStream | null) => void;
@@ -18,6 +28,11 @@ interface CallState {
     setCameraOn: (cameraOn: boolean) => void;
     setPartnerConnected: (connected: boolean) => void;
     setSearching: (searching: boolean) => void;
+    setRoomId: (id: string | null) => void;
+    addMessage: (msg: Message) => void;
+    clearMessages: () => void;
+    setOnlineCount: (count: number) => void;
+    setIsBackendOffline: (offline: boolean) => void;
 }
 
 export const useCallStore = create<CallState>((set) => ({
@@ -28,6 +43,10 @@ export const useCallStore = create<CallState>((set) => ({
     cameraOn: true,
     partnerConnected: false,
     searching: false,
+    roomId: null,
+    messages: [],
+    onlineCount: 0,
+    isBackendOffline: false,
 
     setConnectionState: (connectionState) => set({ connectionState }),
     setLocalStream: (localStream) => set({ localStream }),
@@ -36,4 +55,9 @@ export const useCallStore = create<CallState>((set) => ({
     setCameraOn: (cameraOn) => set({ cameraOn }),
     setPartnerConnected: (partnerConnected) => set({ partnerConnected }),
     setSearching: (searching) => set({ searching }),
+    setRoomId: (roomId) => set({ roomId }),
+    addMessage: (msg) => set((state) => ({ messages: [...state.messages, msg] })),
+    clearMessages: () => set({ messages: [] }),
+    setOnlineCount: (onlineCount) => set({ onlineCount }),
+    setIsBackendOffline: (isBackendOffline) => set({ isBackendOffline }),
 }));

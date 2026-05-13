@@ -12,7 +12,10 @@ export const useWebRTC = () => {
         setPartnerConnected,
         isMuted,
         cameraOn,
-        localStream
+        localStream,
+        addMessage,
+        clearMessages,
+        setRoomId
     } = useCallStore();
 
     const socket = useSocket();
@@ -113,6 +116,20 @@ export const useWebRTC = () => {
         pc.onconnectionstatechange = () => console.log('[WebRTC] Full Connection State:', pc.connectionState);
         pc.onsignalingstatechange = () => console.log('[WebRTC] Signaling State:', pc.signalingState);
 
+        // Negotiate gracefully if tracks are dynamically added (e.g. from missing permissions)
+        pc.onnegotiationneeded = async () => {
+            try {
+                if (pc.signalingState !== "stable") return;
+                const offer = await pc.createOffer();
+                await pc.setLocalDescription(offer);
+                if (socket && currentRoomIdRef.current) {
+                     socket.emit('offer', { roomId: currentRoomIdRef.current, offer });
+                }
+            } catch (e) {
+                console.error('[WebRTC] Renegotiation error:', e);
+            }
+        };
+
         peerConnectionRef.current = pc;
         (window as any).debugPC = pc;
         return pc;
@@ -184,45 +201,40 @@ export const useWebRTC = () => {
         }
     }, []);
 
-    // --- Camera initialization (runs once) ---
-    useEffect(() => {
-        let isMounted = true;
-        let activeStream: MediaStream | null = null;
+    // --- Camera initialization ---
+    const requestMedia = useCallback(async () => {
+        if (localStreamRef.current) return;
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            
+            // Sync with ongoing UI states
+            stream.getAudioTracks().forEach(t => { t.enabled = !useCallStore.getState().isMuted; });
+            stream.getVideoTracks().forEach(t => { t.enabled = useCallStore.getState().cameraOn; });
 
-        const initCamera = async () => {
-            try {
-                const stream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+            setLocalStream(stream);
 
-                // If React immediately unmounted the component (StrictMode), free the hardware immediately
-                if (!isMounted) {
-                    stream.getTracks().forEach(t => t.stop());
-                    return;
-                }
-
-                activeStream = stream;
-                setLocalStream(stream);
-                localStreamRef.current = stream;
-            } catch (err: any) {
-                if (isMounted) {
-                    console.error('Camera error:', err);
-                    const errorMsg = err.name === 'NotAllowedError' || err.name === 'SecurityError' ? 'Permissions denied.' : err.name === 'NotFoundError' ? 'Device not found.' : err.message;
-                    toast.error(`Could not connect to camera: ${errorMsg}`);
-                }
+            // Dynamically add to peer connection if we are already connected!
+            const pc = peerConnectionRef.current;
+            if (pc) {
+                const senders = pc.getSenders();
+                stream.getTracks().forEach(track => {
+                    const sender = senders.find(s => s.track && s.track.kind === track.kind);
+                    if (!sender) {
+                        pc.addTrack(track, stream);
+                    }
+                });
             }
-        };
-
-        if (!localStreamRef.current) {
-            initCamera();
+        } catch (err: any) {
+            console.error('Camera error:', err);
+            const errorMsg = err.name === 'NotAllowedError' || err.name === 'SecurityError' ? 'Permissions denied.' : err.name === 'NotFoundError' ? 'Device not found.' : err.message;
+            toast.error(`Could not connect to camera: ${errorMsg}`);
         }
+    }, [setLocalStream]);
 
-        return () => {
-            isMounted = false;
-            // Free the hardware lock so immediate remount accesses it successfully
-            if (activeStream) {
-                activeStream.getTracks().forEach(t => t.stop());
-            }
-        };
-    }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    useEffect(() => {
+        // initial blind request
+        requestMedia();
+    }, [requestMedia]); 
 
     // --- Socket event listeners + join (runs once when socket is ready) ---
     useEffect(() => {
@@ -232,6 +244,8 @@ export const useWebRTC = () => {
             console.log('Matched! Room:', newRoomId, 'Initiator:', initiator);
             currentRoomIdRef.current = newRoomId;
             roomIdRef.current = newRoomId;
+            setRoomId(newRoomId);
+            clearMessages();
             initializeConnection(newRoomId);
             if (initiator) {
                 createOffer(newRoomId);
@@ -257,22 +271,37 @@ export const useWebRTC = () => {
             addIceCandidate(candidate);
         };
 
+        const onChatMessage = (message: string) => {
+            addMessage({ id: Date.now().toString(), sender: 'stranger', text: message });
+        };
+
         const onPartnerLeft = () => {
             closeConnection();
             currentRoomIdRef.current = null;
             roomIdRef.current = null;
-            setConnectionState('partner_left');
+            setRoomId(null);
+            clearMessages();
+            
+            // Immediate rematch logic
+            hasJoined.current = false;
+            if (hasFetchedIce.current) {
+                hasJoined.current = true;
+                socket.emit('join');
+                setConnectionState('searching');
+                setSearching(true);
+            }
         };
 
         socket.on('matched', onMatched);
         socket.on('offer', onOfferWrapper);
         socket.on('answer', onAnswerWrapper);
         socket.on('ice-candidate', onIceCandidateWrapper);
+        socket.on('chat-message', onChatMessage);
         socket.on('partner-left', onPartnerLeft);
 
-        // Emit join once camera is ready, or wait for it
+        // Emit join immediately (no camera permission needed)
         const tryJoin = () => {
-            if (localStreamRef.current && hasFetchedIce.current && !hasJoined.current) {
+            if (hasFetchedIce.current && !hasJoined.current) {
                 hasJoined.current = true;
                 console.log('Emitting join...');
                 socket.emit('join');
@@ -294,6 +323,7 @@ export const useWebRTC = () => {
             socket.off('offer', onOfferWrapper);
             socket.off('answer', onAnswerWrapper);
             socket.off('ice-candidate', onIceCandidateWrapper);
+            socket.off('chat-message', onChatMessage);
             socket.off('partner-left', onPartnerLeft);
         };
     }, [socket]); // ← ONLY depends on socket. All other values read from refs.
@@ -308,28 +338,22 @@ export const useWebRTC = () => {
 
     const skip = useCallback(() => {
         closeConnection();
-        setConnectionState('searching');
-        setSearching(true);
         if (socket && roomIdRef.current) {
             socket.emit('skip', { roomId: roomIdRef.current });
         }
         currentRoomIdRef.current = null;
         roomIdRef.current = null;
+        setRoomId(null);
+        clearMessages();
+        
         hasJoined.current = false; // allow re-join
-        if (socket) socket.emit('join');
-    }, [closeConnection, setConnectionState, setSearching, socket]);
-
-    const end = useCallback(() => {
-        localStreamRef.current?.getTracks().forEach(t => t.stop());
-        setLocalStream(null);
-        localStreamRef.current = null;
-        closeConnection();
-        setConnectionState('disconnected');
-        setSearching(false);
-        if (socket && roomIdRef.current) {
-            socket.emit('end', { roomId: roomIdRef.current });
+        if (socket) {
+             hasJoined.current = true;
+             socket.emit('join');
+             setConnectionState('searching');
+             setSearching(true);
         }
-    }, [closeConnection, setLocalStream, setConnectionState, setSearching, socket]);
+    }, [closeConnection, setConnectionState, setSearching, socket, clearMessages, setRoomId]);
 
-    return { skip, end };
+    return { skip, requestMedia };
 };

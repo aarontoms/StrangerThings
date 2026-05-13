@@ -3,17 +3,12 @@ import { Send } from 'lucide-react';
 import clsx from 'clsx';
 import { motion, AnimatePresence } from 'framer-motion';
 
-type Message = {
-    id: string;
-    sender: 'you' | 'stranger';
-    text: string;
-};
+import { useCallStore } from '../store/useCallStore';
+import { useSocket } from '../hooks/useSocket';
 
 export const ChatPanel = () => {
-    const [messages, setMessages] = useState<Message[]>([
-        { id: '1', sender: 'stranger', text: 'Hey there!' },
-        { id: '2', sender: 'you', text: 'Hi! How are you?' },
-    ]);
+    const { messages, addMessage, connectionState, roomId } = useCallStore();
+    const socket = useSocket();
     const [input, setInput] = useState('');
     const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -22,8 +17,10 @@ export const ChatPanel = () => {
     }, [messages]);
 
     const handleSend = () => {
-        if (!input.trim()) return;
-        setMessages([...messages, { id: Date.now().toString(), sender: 'you', text: input.trim() }]);
+        if (!input.trim() || connectionState !== 'connected' || !roomId) return;
+        const text = input.trim();
+        addMessage({ id: Date.now().toString(), sender: 'you', text });
+        socket.emit('chat-message', { roomId, message: text });
         setInput('');
     };
 
@@ -63,9 +60,10 @@ export const ChatPanel = () => {
                 <div className="relative flex items-center">
                     <input
                         type="text"
-                        className="w-full h-11 bg-surface border border-surface-border rounded-xl pl-3 pr-10 text-sm focus:outline-none focus:border-brand transition-colors text-white placeholder-gray-500"
-                        placeholder="Type a message..."
+                        className="w-full h-11 bg-surface border border-surface-border rounded-xl pl-3 pr-10 text-sm focus:outline-none focus:border-brand transition-colors text-white placeholder-gray-500 disabled:opacity-50 disabled:cursor-not-allowed"
+                        placeholder={connectionState === 'connected' ? "Type a message..." : "Waiting for stranger..."}
                         value={input}
+                        disabled={connectionState !== 'connected'}
                         onChange={(e) => setInput(e.target.value)}
                         onKeyDown={handleKeyDown}
                     />
