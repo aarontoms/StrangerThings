@@ -191,6 +191,10 @@ The backend exposes `GET /api/ice-servers` which returns:
 }
 ```
 
+> [!WARNING]
+> **Security Notice regarding Coturn Credentials:**
+> The credentials shown above (`stranger` / `thingspassword`) are intended strictly as temporary demonstration credentials for local development. **Do not use these default credentials in production!** Anyone with access to your credentials and public IP can abuse your TURN server as an open relay to forward arbitrary bandwidth. Always replace these with strong, custom credentials or dynamic time-limited tokens (`--use-auth-secret`) in your `.env` and Docker configs.
+
 ---
 
 ## 📁 Project Directory Structure
@@ -246,8 +250,8 @@ PORT=3000
 STUN_URL="stun:YOUR_PUBLIC_OR_LOCAL_IP:3478"
 TURN_URL="turn:YOUR_PUBLIC_OR_LOCAL_IP:3478"
 TURN_URL_TCP="turn:YOUR_PUBLIC_OR_LOCAL_IP:3478?transport=tcp"
-TURN_USERNAME="stranger"
-TURN_CREDENTIAL="thingspassword"
+TURN_USERNAME="stranger"            # Temporary demo username (change in production)
+TURN_CREDENTIAL="thingspassword"    # Temporary demo password (change in production)
 ```
 
 Start the signaling server:
@@ -274,6 +278,8 @@ docker run -d --network=host --name coturn coturn/coturn `
   --user=stranger:thingspassword `
   --external-ip=YOUR_PUBLIC_IP
 ```
+> [!NOTE]
+> The `--user=stranger:thingspassword` flag uses temporary demo credentials. For production deployments or public hosting, make sure to replace `stranger` and `thingspassword` with a strong, secure username and password matching your backend `.env`.
 3. **Firewall & Port Forwarding:**
    - In **Windows Defender Firewall**, allow inbound rules for:
      - **UDP 3478** & **TCP 3478** (STUN/TURN)
